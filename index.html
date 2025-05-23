@@ -1,0 +1,448 @@
+<!DOCTYPE html>
+<html lang="ko">
+  <head>
+    <meta charset="UTF-8" />
+    <title>Screenshot Mosaic Tool</title>
+    <style>
+      /* ========== RESET & TOKENS ========== */
+      * {
+        margin: 0;
+        padding: 0;
+        box-sizing: border-box;
+      }
+      :root {
+        --accent: #2563eb;
+        --bg: #e9ecf1;
+        --pad-bg: rgba(255, 255, 255, 0.85);
+        --radius: 0px; /* corner */
+        --shadow: 12; /* blur px (unitless) */
+        --pad-y: 16px; /* controller vertical padding */
+      }
+      body {
+        font-family: system-ui, 'Pretendard', sans-serif;
+        background: var(--bg);
+        display: flex;
+        min-height: 100vh;
+        align-items: center;
+        justify-content: center;
+        overflow: hidden;
+      }
+
+      /* ========== MAIN STAGE ========== */
+      #stage {
+        position: relative;
+        width: 92vw;
+        max-width: 1280px;
+        max-height: 88vh;
+        aspect-ratio: 4/3;
+        border: 4px dashed #cbd5e1;
+        background: #fff;
+        transition: border-color 0.2s;
+      }
+      #stage.loaded {
+        border-color: transparent;
+      }
+      #stage.drop-hover {
+        border-color: var(--accent);
+        background: #dee3ff;
+      }
+      #dropHint {
+        position: absolute;
+        top: 50%;
+        left: 50%;
+        transform: translate(-50%, -50%);
+        color: #64748b;
+        font-size: 1rem;
+        text-align: center;
+        line-height: 1.6;
+        pointer-events: none;
+        user-select: none;
+        opacity: 0.9;
+        transition: opacity 0.4s;
+      }
+      #stage.loaded #dropHint {
+        opacity: 0;
+      }
+
+      #canvas {
+        display: block;
+        width: 100%;
+        height: auto;
+        max-width: 100%;
+        max-height: 100%;
+        border-radius: var(--radius);
+        cursor: crosshair;
+        box-shadow: 0 0 calc(var(--shadow) * 1px) rgba(0, 0, 0, 0.25);
+      }
+      #cursorCanvas {
+        position: absolute;
+        inset: 0;
+        pointer-events: none;
+        width: 100%;
+        height: auto;
+        max-width: 100%;
+        max-height: 100%;
+        border-radius: var(--radius);
+        /* 그림자 제거 및 투명 배경으로 보이지 않게 */
+        box-shadow: none !important;
+        background: transparent;
+      }
+      #cursorCanvas {
+        position: absolute;
+        inset: 0;
+        pointer-events: none;
+      }
+
+      /* ========== CONTROL PAD (Dock‑like bottom center) ========== */
+      #pad {
+        width: 725px;
+        position: fixed;
+        bottom: calc(var(--pad-y));
+        left: 50%;
+        transform: translateX(-50%);
+        display: flex;
+        gap: 1rem;
+        align-items: center;
+        background: var(--pad-bg);
+        backdrop-filter: blur(12px);
+        padding: 0.9rem 1.4rem;
+        border-radius: 1.4rem 1.4rem 1.8rem 1.8rem;
+        box-shadow: 0 6px 12px rgba(0, 0, 0, 0.15);
+        z-index: 1000;
+        cursor: grab;
+        user-select: none;
+      }
+      #pad.dragging {
+        cursor: grabbing;
+      }
+      #pad .row {
+        display: flex;
+        align-items: center;
+        gap: 0.6rem;
+        flex-shrink: 0;
+      }
+      #pad button {
+        background: none;
+        border: none;
+        font-size: 1.2rem;
+        display: flex;
+        align-items: center;
+        gap: 0.3rem;
+        color: #334155;
+        cursor: pointer;
+      }
+      #pad button:hover {
+        color: var(--accent);
+      }
+      #pad input[type='range'] {
+        width: 100px;
+        height: 4px;
+        cursor: pointer;
+      }
+      #pad span.val {
+        font-size: 0.8rem;
+        color: #475569;
+        width: 20px;
+        text-align: right;
+      }
+      input[type='file'] {
+        display: none;
+      }
+
+      /* cursor preview fill */
+      .preview-square {
+        stroke: #000;
+        stroke-width: 1;
+        stroke-dasharray: 5 3;
+        fill: rgba(0, 0, 0, 0.05);
+      }
+
+      .hidden {
+        display: none !important;
+      }
+    </style>
+  </head>
+  <body>
+    <!-- ========== STAGE ========== -->
+    <div id="stage" tabindex="0">
+      <div id="dropHint">이미지를 <strong>드래그 & 드롭</strong>하거나<br />아래 컨트롤러의 📂 버튼으로 불러오세요</div>
+      <canvas id="canvas" class="hidden"></canvas>
+      <canvas id="cursorCanvas" class="hidden"></canvas>
+    </div>
+
+    <!-- ========== CONTROL PAD ========== -->
+    <div id="pad" aria-label="툴 패널">
+      <div class="row">
+        <button id="uploadBtn" title="이미지 불러오기">📂 <label for="fileInput"></label></button>
+      </div>
+      <input type="file" id="fileInput" accept="image/*" />
+
+      <div class="row"><button id="modeBtn" title="모드 전환">🖌️</button></div>
+
+      <div class="row">
+        <span>블록</span><input type="range" id="mosaicSize" min="5" max="60" step="2" value="6" /><span class="val" id="blockVal">15</span>
+      </div>
+      <div class="row">
+        <span>라운드</span><input type="range" id="radiusInput" min="0" max="200" step="2" value="6" /><span class="val" id="radiusVal">0</span>
+      </div>
+      <div class="row">
+        <span>그림자</span><input type="range" id="shadowInput" min="0" max="60" step="2" value="6" /><span class="val" id="shadowVal">12</span>
+      </div>
+
+      <div class="row"><button id="downloadBtn" title="PNG 저장">⬇️</button></div>
+    </div>
+
+    <script>
+      /* ===== CONSTANTS & ELEMENTS ===== */
+      const SCALE = 2; // internal DPR multiplier
+
+      const stage = document.getElementById('stage');
+      const dropHint = document.getElementById('dropHint');
+      const canvas = document.getElementById('canvas');
+      const ctx = canvas.getContext('2d');
+      const cursorCanvas = document.getElementById('cursorCanvas');
+      const cctx = cursorCanvas.getContext('2d');
+
+      const fileInput = document.getElementById('fileInput');
+      const uploadBtn = document.getElementById('uploadBtn');
+      const modeBtn = document.getElementById('modeBtn');
+      const mosaicSizeInput = document.getElementById('mosaicSize');
+      const radiusInput = document.getElementById('radiusInput');
+      const shadowInput = document.getElementById('shadowInput');
+      const downloadBtn = document.getElementById('downloadBtn');
+
+      const blockVal = document.getElementById('blockVal');
+      const radiusVal = document.getElementById('radiusVal');
+      const shadowVal = document.getElementById('shadowVal');
+
+      const pad = document.getElementById('pad');
+
+      /* ===== STATE ===== */
+      let img = new Image();
+      let mode = 'mosaic';
+      let isDrawing = false;
+      const undoStack = [];
+      const MAX_UNDO = 30;
+
+      /* ===== OFFSCREEN ===== */
+      const off = document.createElement('canvas');
+      off.width = off.height = 1;
+      const offCtx = off.getContext('2d');
+
+      /* ===== GLOBAL DRAG PREVENT OUTSIDE STAGE ===== */
+      ['dragover', 'drop'].forEach(evt => window.addEventListener(evt, e => e.preventDefault()));
+
+      /* ===== FUNCTIONS ===== */
+      const updateCSSVars = () => {
+        document.documentElement.style.setProperty('--radius', radiusInput.value + 'px');
+        document.documentElement.style.setProperty('--shadow', shadowInput.value);
+        blockVal.textContent = mosaicSizeInput.value;
+        radiusVal.textContent = radiusInput.value;
+        shadowVal.textContent = shadowInput.value;
+      };
+      updateCSSVars();
+
+      const saveState = () => {
+        if (undoStack.length >= MAX_UNDO) undoStack.shift();
+        undoStack.push(ctx.getImageData(0, 0, canvas.width, canvas.height));
+      };
+      const undo = () => {
+        if (undoStack.length) ctx.putImageData(undoStack.pop(), 0, 0);
+      };
+
+      const setModeText = () => {
+        modeBtn.textContent = mode === 'mosaic' ? '🖌️' : '🔎';
+      };
+
+      /* ===== LOAD IMAGE ===== */
+      function loadImage(file) {
+        if (!file || !file.type.startsWith('image/')) return;
+        const url = URL.createObjectURL(file);
+        img.onload = () => {
+          const w = img.width,
+            h = img.height;
+          canvas.width = w * SCALE;
+          canvas.height = h * SCALE;
+          cursorCanvas.width = canvas.width;
+          cursorCanvas.height = canvas.height;
+          canvas.style.width = w + 'px';
+          canvas.style.height = h + 'px';
+          cursorCanvas.style.width = w + 'px';
+          cursorCanvas.style.height = h + 'px';
+          ctx.save();
+          ctx.scale(SCALE, SCALE);
+          ctx.drawImage(img, 0, 0, w, h);
+          ctx.restore();
+          [canvas, cursorCanvas].forEach(el => el.classList.remove('hidden'));
+          stage.classList.add('loaded');
+          URL.revokeObjectURL(url);
+          undoStack.length = 0;
+        };
+        img.src = url;
+      }
+
+      fileInput.addEventListener('change', e => loadImage(e.target.files[0]));
+      uploadBtn.addEventListener('click', () => fileInput.click());
+
+      /* ---- Drag & Drop ---- */
+      ['dragenter', 'dragover'].forEach(evt =>
+        stage.addEventListener(evt, e => {
+          e.preventDefault();
+          stage.classList.add('drop-hover');
+        }),
+      );
+      ['dragleave', 'drop'].forEach(evt =>
+        stage.addEventListener(evt, e => {
+          e.preventDefault();
+          stage.classList.remove('drop-hover');
+        }),
+      );
+      stage.addEventListener('drop', e => {
+        e.stopPropagation();
+        loadImage(e.dataTransfer.files[0]);
+      });
+
+      /* ===== MOSAIC ===== */
+      function applyMosaic(cx, cy) {
+        const rect = canvas.getBoundingClientRect();
+        const scale = canvas.width / rect.width;
+        const sizeDisp = +mosaicSizeInput.value;
+        const size = sizeDisp * SCALE;
+        const x = (cx - rect.left) * scale;
+        const y = (cy - rect.top) * scale;
+        const gx = Math.floor(x / size) * size;
+        const gy = Math.floor(y / size) * size;
+        offCtx.drawImage(canvas, gx, gy, size, size, 0, 0, 1, 1);
+        ctx.drawImage(off, 0, 0, 1, 1, gx, gy, size, size);
+      }
+
+      canvas.addEventListener('mousedown', e => {
+        if (mode !== 'mosaic') return;
+        saveState();
+        isDrawing = true;
+        applyMosaic(e.clientX, e.clientY);
+      });
+      canvas.addEventListener('mousemove', e => {
+        drawCursor(e);
+        if (isDrawing && mode === 'mosaic') applyMosaic(e.clientX, e.clientY);
+      });
+      window.addEventListener('mouseup', () => (isDrawing = false));
+
+      /* ===== CURSOR PREVIEW ===== */
+      function drawCursor(evt) {
+        if (cursorCanvas.classList.contains('hidden')) return;
+        cctx.clearRect(0, 0, cursorCanvas.width, cursorCanvas.height);
+        if (mode !== 'mosaic' || !evt) return;
+        const rect = canvas.getBoundingClientRect();
+        const scale = canvas.width / rect.width;
+        const sizeDisp = +mosaicSizeInput.value;
+        const size = sizeDisp * SCALE;
+        const cssSize = sizeDisp;
+        const x = evt.clientX - rect.left - cssSize / 2;
+        const y = evt.clientY - rect.top - cssSize / 2;
+        const ix = x * scale;
+        const iy = y * scale;
+        cctx.fillStyle = 'rgba(0,0,0,.05)';
+        cctx.fillRect(ix, iy, size, size);
+        cctx.strokeStyle = 'rgba(0,0,0,.6)';
+        cctx.lineWidth = 1;
+        cctx.setLineDash([5, 3]);
+        cctx.strokeRect(ix, iy, size, size);
+      }
+
+      /* ===== SLIDER EVENTS ===== */
+      [mosaicSizeInput, radiusInput, shadowInput].forEach(inp => inp.addEventListener('input', updateCSSVars));
+
+      /* ===== MODE TOGGLE ===== */
+      modeBtn.addEventListener('click', () => {
+        mode = mode === 'mosaic' ? 'none' : 'mosaic';
+        setModeText();
+        drawCursor();
+      });
+      setModeText();
+
+      /* ===== SHORTCUT (UNDO) ===== */
+      document.addEventListener('keydown', e => {
+        if ((e.ctrlKey || e.metaKey) && e.key === 'z') {
+          e.preventDefault();
+          undo();
+        }
+      });
+
+      /* ===== DOWNLOAD (include shadow) ===== */
+      downloadBtn.addEventListener('click', () => {
+        if (canvas.classList.contains('hidden')) return;
+        const r = +radiusInput.value * SCALE;
+        const shadowBlur = +shadowInput.value * SCALE;
+        const pad = shadowBlur + 4 * SCALE; // extra margin for safety
+
+        // mask canvas with rounded clip
+        const mask = document.createElement('canvas');
+        mask.width = canvas.width;
+        mask.height = canvas.height;
+        const mctx = mask.getContext('2d');
+        mctx.save();
+        roundedRect(mctx, 0, 0, mask.width, mask.height, r);
+        mctx.clip();
+        mctx.drawImage(canvas, 0, 0);
+        mctx.restore();
+
+        // final canvas with padding
+        const out = document.createElement('canvas');
+        out.width = canvas.width + pad * 2;
+        out.height = canvas.height + pad * 2;
+        const octx = out.getContext('2d');
+        octx.shadowBlur = shadowBlur;
+        octx.shadowColor = 'rgba(0,0,0,.25)';
+        octx.drawImage(mask, pad, pad);
+
+        const link = document.createElement('a');
+        link.download = 'edited.png';
+        link.href = out.toDataURL('image/png');
+        link.click();
+      });
+
+      function roundedRect(ctx, x, y, w, h, r) {
+        ctx.beginPath();
+        if (!r) {
+          ctx.rect(x, y, w, h);
+        } else {
+          ctx.moveTo(x + r, y);
+          ctx.lineTo(x + w - r, y);
+          ctx.arcTo(x + w, y, x + w, y + r, r);
+          ctx.lineTo(x + w, y + h - r);
+          ctx.arcTo(x + w, y + h, x + w - r, y + h, r);
+          ctx.lineTo(x + r, y + h);
+          ctx.arcTo(x, y + h, x, y + h - r, r);
+          ctx.lineTo(x, y + r);
+          ctx.arcTo(x, y, x + r, y, r);
+        }
+        ctx.closePath();
+      }
+
+      /* ===== PAD DRAG ===== */
+      let dragging = false,
+        offX = 0,
+        offY = 0;
+      pad.addEventListener('mousedown', e => {
+        if (e.target.tagName === 'INPUT') return;
+        dragging = true;
+        pad.classList.add('dragging');
+        const r = pad.getBoundingClientRect();
+        offX = e.clientX - r.left;
+        offY = e.clientY - r.top;
+      });
+      document.addEventListener('mousemove', e => {
+        if (!dragging) return;
+        pad.style.left = `${e.clientX - offX}px`;
+        pad.style.top = `${e.clientY - offY}px`;
+        pad.style.bottom = 'auto';
+        pad.style.transform = 'translateX(0)';
+      });
+      document.addEventListener('mouseup', () => {
+        dragging = false;
+        pad.classList.remove('dragging');
+      });
+    </script>
+  </body>
+</html>
