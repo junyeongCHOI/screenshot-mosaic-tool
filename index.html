@@ -25,7 +25,7 @@
         min-height: 100vh;
         align-items: center;
         justify-content: center;
-        overflow: hidden;
+        overflow: hidden; /* Prevent body scrollbars */
       }
 
       /* ========== MAIN STAGE ========== */
@@ -35,9 +35,13 @@
         max-width: 1280px;
         max-height: 88vh;
         aspect-ratio: 4/3;
-        border: 4px dashed #cbd5e1;
+        border: 2px dashed #cbd5e1;
         background: #fff;
         transition: border-color 0.2s;
+        display: flex; /* For centering canvas */
+        align-items: center; /* For centering canvas */
+        justify-content: center; /* For centering canvas */
+        overflow: hidden; /* Clip scaled canvas */
       }
       #stage.loaded {
         border-color: transparent;
@@ -65,33 +69,24 @@
       }
 
       #canvas {
-        display: block;
-        width: 100%;
-        height: auto;
-        max-width: 100%;
-        max-height: 100%;
+        /* display: block; // Default for canvas */
+        /* width, height, max-width, max-height removed, set by JS */
         border-radius: var(--radius);
         cursor: crosshair;
         box-shadow: 0 0 calc(var(--shadow) * 1px) rgba(0, 0, 0, 0.25);
+        /* transform-origin defaults to 50% 50% (center) */
       }
       #cursorCanvas {
         position: absolute;
-        inset: 0;
+        /* inset, width, height, max-width, max-height removed, set by JS */
         pointer-events: none;
-        width: 100%;
-        height: auto;
-        max-width: 100%;
-        max-height: 100%;
         border-radius: var(--radius);
         /* 그림자 제거 및 투명 배경으로 보이지 않게 */
         box-shadow: none !important;
         background: transparent;
+        /* transform-origin defaults to 50% 50% (center) */
       }
-      #cursorCanvas {
-        position: absolute;
-        inset: 0;
-        pointer-events: none;
-      }
+      /* Removed duplicate #cursorCanvas rule */
 
       /* ========== CONTROL PAD (Dock‑like bottom center) ========== */
       #pad {
@@ -179,14 +174,12 @@
 
       <div class="row"><button id="modeBtn" title="모드 전환">🖌️</button></div>
 
+      <div class="row"><span>블록</span><input type="range" id="mosaicSize" min="5" max="60" step="2" value="6" /><span class="val" id="blockVal">6</span></div>
       <div class="row">
-        <span>블록</span><input type="range" id="mosaicSize" min="5" max="60" step="2" value="6" /><span class="val" id="blockVal">15</span>
+        <span>라운드</span><input type="range" id="radiusInput" min="0" max="200" step="2" value="6" /><span class="val" id="radiusVal">6</span>
       </div>
       <div class="row">
-        <span>라운드</span><input type="range" id="radiusInput" min="0" max="200" step="2" value="6" /><span class="val" id="radiusVal">0</span>
-      </div>
-      <div class="row">
-        <span>그림자</span><input type="range" id="shadowInput" min="0" max="60" step="2" value="6" /><span class="val" id="shadowVal">12</span>
+        <span>그림자</span><input type="range" id="shadowInput" min="0" max="60" step="2" value="6" /><span class="val" id="shadowVal">6</span>
       </div>
 
       <div class="row"><button id="downloadBtn" title="PNG 저장">⬇️</button></div>
@@ -194,7 +187,7 @@
 
     <script>
       /* ===== CONSTANTS & ELEMENTS ===== */
-      const SCALE = 2; // internal DPR multiplier
+      // const SCALE = 2; // REMOVED
 
       const stage = document.getElementById('stage');
       const dropHint = document.getElementById('dropHint');
@@ -219,10 +212,23 @@
 
       /* ===== STATE ===== */
       let img = new Image();
+      let originalImgWidth = 0;
+      let originalImgHeight = 0;
+      let zoomLevel = 1;
       let mode = 'mosaic';
-      let isDrawing = false;
+      let isDrawing = false; // For mosaic drawing
       const undoStack = [];
       const MAX_UNDO = 30;
+
+      // Panning state for Spacebar
+      let isSpacebarDown = false;
+      let isPanningWithSpacebar = false;
+      let panStartMouseX = 0;
+      let panStartMouseY = 0;
+      let panStartCanvasOffsetX = 0;
+      let panStartCanvasOffsetY = 0;
+      let canvasOffsetX = 0; // Current X offset of the canvas
+      let canvasOffsetY = 0; // Current Y offset of the canvas
 
       /* ===== OFFSCREEN ===== */
       const off = document.createElement('canvas');
@@ -242,6 +248,12 @@
       };
       updateCSSVars();
 
+      const updateCanvasTransform = () => {
+        const transform = `translate(${canvasOffsetX}px, ${canvasOffsetY}px) scale(${zoomLevel})`;
+        canvas.style.transform = transform;
+        cursorCanvas.style.transform = transform;
+      };
+
       const saveState = () => {
         if (undoStack.length >= MAX_UNDO) undoStack.shift();
         undoStack.push(ctx.getImageData(0, 0, canvas.width, canvas.height));
@@ -250,8 +262,36 @@
         if (undoStack.length) ctx.putImageData(undoStack.pop(), 0, 0);
       };
 
+      const setCursorStyles = () => {
+        if (canvas.classList.contains('hidden')) {
+          stage.style.cursor = 'default';
+          canvas.style.cursor = 'default';
+          return;
+        }
+
+        if (isPanningWithSpacebar) {
+          stage.style.cursor = 'grabbing';
+          canvas.style.cursor = 'grabbing';
+        } else if (isSpacebarDown) {
+          stage.style.cursor = 'grab';
+          canvas.style.cursor = 'grab';
+        } else if (mode === 'mosaic') {
+          stage.style.cursor = 'default'; // Stage doesn't need special cursor for mosaic
+          canvas.style.cursor = 'crosshair';
+        } else {
+          // mode === 'none' and spacebar not down
+          stage.style.cursor = 'default';
+          canvas.style.cursor = 'default'; // Or 'grab' if you want to allow click-drag panning without spacebar
+        }
+      };
+
       const setModeText = () => {
         modeBtn.textContent = mode === 'mosaic' ? '🖌️' : '🔎';
+        setCursorStyles();
+        if (mode !== 'mosaic' && !canvas.classList.contains('hidden')) {
+          cctx.clearRect(0, 0, cursorCanvas.width, cursorCanvas.height);
+        }
+        // If switching to mosaic, drawCursor will be handled by mousemove or mouseenter
       };
 
       /* ===== LOAD IMAGE ===== */
@@ -259,24 +299,32 @@
         if (!file || !file.type.startsWith('image/')) return;
         const url = URL.createObjectURL(file);
         img.onload = () => {
-          const w = img.width,
-            h = img.height;
-          canvas.width = w * SCALE;
-          canvas.height = h * SCALE;
-          cursorCanvas.width = canvas.width;
-          cursorCanvas.height = canvas.height;
-          canvas.style.width = w + 'px';
-          canvas.style.height = h + 'px';
-          cursorCanvas.style.width = w + 'px';
-          cursorCanvas.style.height = h + 'px';
-          ctx.save();
-          ctx.scale(SCALE, SCALE);
-          ctx.drawImage(img, 0, 0, w, h);
-          ctx.restore();
+          originalImgWidth = img.width;
+          originalImgHeight = img.height;
+
+          canvas.width = originalImgWidth;
+          canvas.height = originalImgHeight;
+          cursorCanvas.width = originalImgWidth;
+          cursorCanvas.height = originalImgHeight;
+
+          canvas.style.width = originalImgWidth + 'px';
+          canvas.style.height = originalImgHeight + 'px';
+          cursorCanvas.style.width = originalImgWidth + 'px';
+          cursorCanvas.style.height = originalImgHeight + 'px';
+
+          zoomLevel = 1;
+          canvasOffsetX = 0;
+          canvasOffsetY = 0;
+          updateCanvasTransform(); // Apply initial transform
+
+          ctx.drawImage(img, 0, 0, originalImgWidth, originalImgHeight);
+
           [canvas, cursorCanvas].forEach(el => el.classList.remove('hidden'));
           stage.classList.add('loaded');
           URL.revokeObjectURL(url);
           undoStack.length = 0;
+          setCursorStyles(); // Set initial cursors
+          drawCursor(); // Clear or draw initial cursor preview
         };
         img.src = url;
       }
@@ -302,52 +350,154 @@
         loadImage(e.dataTransfer.files[0]);
       });
 
-      /* ===== MOSAIC ===== */
-      function applyMosaic(cx, cy) {
-        const rect = canvas.getBoundingClientRect();
-        const scale = canvas.width / rect.width;
-        const sizeDisp = +mosaicSizeInput.value;
-        const size = sizeDisp * SCALE;
-        const x = (cx - rect.left) * scale;
-        const y = (cy - rect.top) * scale;
+      /* ===== KEYBOARD EVENTS (SPACEBAR FOR PANNING) ===== */
+      window.addEventListener('keydown', e => {
+        if (e.key === ' ' && !isSpacebarDown && !canvas.classList.contains('hidden')) {
+          isSpacebarDown = true;
+          setCursorStyles();
+          e.preventDefault(); // Prevent page scroll
+        }
+        // Undo shortcut is handled by a separate listener
+      });
+
+      window.addEventListener('keyup', e => {
+        if (e.key === ' ') {
+          isSpacebarDown = false;
+          // If not currently panning when space is released, update cursor
+          if (!isPanningWithSpacebar) {
+            setCursorStyles();
+          }
+          // If panning was active, mouseup will handle cursor update
+        }
+      });
+
+      /* ===== MOUSE WHEEL ZOOM (Zoom to Pointer) ===== */
+      stage.addEventListener('wheel', e => {
+        if (!img.src || canvas.classList.contains('hidden')) return;
+        e.preventDefault();
+
+        const oldZoomLevel = zoomLevel;
+        const zoomIntensity = 0.024;
+
+        let newZoomLevel;
+        if (e.deltaY < 0) {
+          newZoomLevel = oldZoomLevel * (1 + zoomIntensity * 3);
+        } else {
+          newZoomLevel = oldZoomLevel / (1 + zoomIntensity * 3);
+        }
+        newZoomLevel = Math.max(0.1, Math.min(newZoomLevel, 10));
+        newZoomLevel = parseFloat(newZoomLevel.toFixed(3));
+
+        if (newZoomLevel === oldZoomLevel) return;
+
+        const stageRect = stage.getBoundingClientRect();
+        const mouseStageX = e.clientX - stageRect.left;
+        const mouseStageY = e.clientY - stageRect.top;
+
+        const stageWidth = stage.clientWidth;
+        const stageHeight = stage.clientHeight;
+
+        const imageCoordX = (mouseStageX - stageWidth / 2 - canvasOffsetX) / oldZoomLevel + originalImgWidth / 2;
+        const imageCoordY = (mouseStageY - stageHeight / 2 - canvasOffsetY) / oldZoomLevel + originalImgHeight / 2;
+
+        zoomLevel = newZoomLevel;
+
+        canvasOffsetX = mouseStageX - stageWidth / 2 - (imageCoordX - originalImgWidth / 2) * zoomLevel;
+        canvasOffsetY = mouseStageY - stageHeight / 2 - (imageCoordY - originalImgHeight / 2) * zoomLevel;
+
+        updateCanvasTransform();
+        drawCursor(e);
+      });
+
+      /* ===== MOUSE EVENTS ON STAGE & WINDOW (PANNING, DRAWING) ===== */
+      stage.addEventListener('mousedown', e => {
+        if (canvas.classList.contains('hidden') || e.button !== 0) return; // Only left click
+
+        if (isSpacebarDown) {
+          isPanningWithSpacebar = true;
+          panStartMouseX = e.clientX;
+          panStartMouseY = e.clientY;
+          panStartCanvasOffsetX = canvasOffsetX;
+          panStartCanvasOffsetY = canvasOffsetY;
+          setCursorStyles();
+          e.preventDefault(); // Prevent text selection or other default drag behaviors
+        } else if (mode === 'mosaic' && e.target === canvas) {
+          // Check if the click is on the canvas itself for mosaic
+          saveState();
+          isDrawing = true;
+          applyMosaic(e.clientX, e.clientY);
+        }
+      });
+
+      window.addEventListener('mousemove', e => {
+        if (isPanningWithSpacebar) {
+          const dx = e.clientX - panStartMouseX;
+          const dy = e.clientY - panStartMouseY;
+          canvasOffsetX = panStartCanvasOffsetX + dx;
+          canvasOffsetY = panStartCanvasOffsetY + dy;
+          updateCanvasTransform();
+        } else if (isDrawing && mode === 'mosaic') {
+          applyMosaic(e.clientX, e.clientY);
+        }
+
+        // Always update cursor preview if image is loaded and mouse is over stage
+        // (drawCursor checks internally if it should draw based on mode)
+        if ((!canvas.classList.contains('hidden') && e.target === stage) || stage.contains(e.target)) {
+          drawCursor(e);
+        }
+      });
+
+      window.addEventListener('mouseup', e => {
+        if (e.button !== 0) return; // Only left click up
+
+        if (isPanningWithSpacebar) {
+          isPanningWithSpacebar = false;
+          setCursorStyles(); // Update cursor based on whether spacebar is still down or not
+        }
+        if (isDrawing) {
+          isDrawing = false;
+          // Cursor for mosaic mode doesn't change on mouseup, setCursorStyles not strictly needed
+          // unless spacebar state changed during drawing (unlikely).
+        }
+      });
+
+      stage.addEventListener('mouseenter', e => {
+        // Draw cursor preview when mouse enters stage if in mosaic mode
+        if (!canvas.classList.contains('hidden') && mode === 'mosaic') {
+          drawCursor(e);
+        }
+      });
+
+      stage.addEventListener('mouseleave', e => {
+        // Clear cursor preview if mouse leaves stage, not drawing/panning, and in mosaic mode
+        if (!isDrawing && !isPanningWithSpacebar && mode === 'mosaic' && !canvas.classList.contains('hidden')) {
+          cctx.clearRect(0, 0, cursorCanvas.width, cursorCanvas.height);
+        }
+      });
+
+      /* ===== MOSAIC (Apply Logic) ===== */
+      function applyMosaic(clientX, clientY) {
+        const rect = canvas.getBoundingClientRect(); // Gets the scaled canvas's rect
+
+        // Convert mouse client coordinates to unscaled canvas coordinates
+        const xOnScaledCanvas = clientX - rect.left;
+        const yOnScaledCanvas = clientY - rect.top;
+
+        const x = xOnScaledCanvas / zoomLevel;
+        const y = yOnScaledCanvas / zoomLevel;
+
+        const size = +mosaicSizeInput.value; // Size in original image pixels
+
         const gx = Math.floor(x / size) * size;
         const gy = Math.floor(y / size) * size;
+
+        // Basic check to avoid drawing if the entire mosaic block is outside the canvas
+        if (gx + size <= 0 || gy + size <= 0 || gx >= originalImgWidth || gy >= originalImgHeight) {
+          return;
+        }
+
         offCtx.drawImage(canvas, gx, gy, size, size, 0, 0, 1, 1);
         ctx.drawImage(off, 0, 0, 1, 1, gx, gy, size, size);
-      }
-
-      canvas.addEventListener('mousedown', e => {
-        if (mode !== 'mosaic') return;
-        saveState();
-        isDrawing = true;
-        applyMosaic(e.clientX, e.clientY);
-      });
-      canvas.addEventListener('mousemove', e => {
-        drawCursor(e);
-        if (isDrawing && mode === 'mosaic') applyMosaic(e.clientX, e.clientY);
-      });
-      window.addEventListener('mouseup', () => (isDrawing = false));
-
-      /* ===== CURSOR PREVIEW ===== */
-      function drawCursor(evt) {
-        if (cursorCanvas.classList.contains('hidden')) return;
-        cctx.clearRect(0, 0, cursorCanvas.width, cursorCanvas.height);
-        if (mode !== 'mosaic' || !evt) return;
-        const rect = canvas.getBoundingClientRect();
-        const scale = canvas.width / rect.width;
-        const sizeDisp = +mosaicSizeInput.value;
-        const size = sizeDisp * SCALE;
-        const cssSize = sizeDisp;
-        const x = evt.clientX - rect.left - cssSize / 2;
-        const y = evt.clientY - rect.top - cssSize / 2;
-        const ix = x * scale;
-        const iy = y * scale;
-        cctx.fillStyle = 'rgba(0,0,0,.05)';
-        cctx.fillRect(ix, iy, size, size);
-        cctx.strokeStyle = 'rgba(0,0,0,.6)';
-        cctx.lineWidth = 1;
-        cctx.setLineDash([5, 3]);
-        cctx.strokeRect(ix, iy, size, size);
       }
 
       /* ===== SLIDER EVENTS ===== */
@@ -356,10 +506,9 @@
       /* ===== MODE TOGGLE ===== */
       modeBtn.addEventListener('click', () => {
         mode = mode === 'mosaic' ? 'none' : 'mosaic';
-        setModeText();
-        drawCursor();
+        setModeText(); // This now handles cursor styles and clearing preview
       });
-      setModeText();
+      // setModeText(); // Initial call moved to end of script or after elements are defined
 
       /* ===== SHORTCUT (UNDO) ===== */
       document.addEventListener('keydown', e => {
@@ -372,14 +521,14 @@
       /* ===== DOWNLOAD (include shadow) ===== */
       downloadBtn.addEventListener('click', () => {
         if (canvas.classList.contains('hidden')) return;
-        const r = +radiusInput.value * SCALE;
-        const shadowBlur = +shadowInput.value * SCALE;
-        const pad = shadowBlur + 4 * SCALE; // extra margin for safety
+        const r = +radiusInput.value;
+        const shadowBlur = +shadowInput.value;
+        const PADDING = shadowBlur + 4;
 
         // mask canvas with rounded clip
         const mask = document.createElement('canvas');
-        mask.width = canvas.width;
-        mask.height = canvas.height;
+        mask.width = originalImgWidth;
+        mask.height = originalImgHeight;
         const mctx = mask.getContext('2d');
         mctx.save();
         roundedRect(mctx, 0, 0, mask.width, mask.height, r);
@@ -389,8 +538,8 @@
 
         // final canvas with padding
         const out = document.createElement('canvas');
-        out.width = canvas.width + pad * 2;
-        out.height = canvas.height + pad * 2;
+        out.width = originalImgWidth + PADDING * 2;
+        out.height = originalImgHeight + PADDING * 2;
         const octx = out.getContext('2d');
         octx.shadowBlur = shadowBlur;
         octx.shadowColor = 'rgba(0,0,0,.25)';
@@ -421,7 +570,7 @@
       }
 
       /* ===== PAD DRAG ===== */
-      let dragging = false,
+      let dragging = false, // This 'dragging' is for the pad
         offX = 0,
         offY = 0;
       pad.addEventListener('mousedown', e => {
@@ -433,16 +582,23 @@
         offY = e.clientY - r.top;
       });
       document.addEventListener('mousemove', e => {
-        if (!dragging) return;
+        if (!dragging) return; // This is for pad dragging
         pad.style.left = `${e.clientX - offX}px`;
         pad.style.top = `${e.clientY - offY}px`;
         pad.style.bottom = 'auto';
         pad.style.transform = 'translateX(0)';
       });
       document.addEventListener('mouseup', () => {
-        dragging = false;
-        pad.classList.remove('dragging');
+        // This is for pad dragging
+        if (dragging) {
+          // Check pad's dragging state
+          dragging = false;
+          pad.classList.remove('dragging');
+        }
       });
+
+      // Initial setup calls
+      setModeText(); // Includes setCursorStyles
     </script>
   </body>
 </html>
